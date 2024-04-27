@@ -6,55 +6,174 @@
 
 import Pyro5.api
 import Pyro5.server
-import sys
 import random
+import threading
 from util import *
 
 
 @Pyro5.api.expose                   # Permite o acesso remoto
 class Peer:
-    def __init__(self):
-        self.name = sys.argv[1]
-        self.port = sys.argv[2]
-        self.daemon = Pyro5.server.Daemon(port=int(self.port))  # Cria o servidor que faz a ponte de comunicação
+    def __init__(self, name, port):
+        self.name = str(name)
+        self.port = int(port)
+        self.daemon = Pyro5.api.Daemon(port=self.port)       # Cria o servidor que faz a ponte de comunicação
         self.state = states['follower']
         self.election_timer = random.uniform(1.5, 3)
+        self.votes = 0
+        self.voted = False
+        self.leader = None
 
-        self.election()
-        self.comunication()
+    def get_name(self):
+        return self.name
+
+    def get_voted(self):
+        return self.voted
+
+    def get_votes(self):
+        return self.votes
+
+    def get_state(self):
+        return self.state
+
+    def get_leader(self):
+        return self.leader
+
+    def set_votes(self, votes):
+        self.votes = votes
+
+    def set_voted(self, voted):
+        self.voted = voted
+
+    def set_state(self, state):
+        self.state = states[state]
+
+    def set_leader(self, leader):
+        self.leader = leader
 
     def loop_daemon(self):
-        print(f"{self.name} is running.\n")
-        self.daemon.requestLoop()
+        print(f"{self.name} is running.")
 
-    def get_message(self):
-        return "Mensagem do {0}\n".format(self.name)
+        t = threading.Thread(target=self.daemon.requestLoop)
+        t.start()
+
+        self.election()
 
     def election(self):
         print(f"{self.name} time: {self.election_timer}")
-        countdown_timer(self.election_timer, self.name)
-        pass
-        # Ver se antes de zerar o timer, recebi uma mensagem de algum par
+
+        print(f"New leader: {self.leader}")
+
+        if countdown_timer(self.election_timer) and not self.leader:
+            print(f"Time's up {self.name}!")
+            self.state = states['candidate']
+            self.comunication()
+
+            print(f'{self.name} after communcation: {self.state}, {self.votes}, {self.voted}')
+
+            self.choose_leader()
+
+        self.election()
 
     def comunication(self):
-        if self.port == '9091':
-            p1 = Pyro5.api.Proxy('PYRONAME:peer2')
-            print(p1.get_message())
+        if self.port != 9091:
+            p = Pyro5.api.Proxy(uris['peer1'])
+            if not p.get_voted() and p.get_state() == 'follower':
+                p.vote(self.name)
+                self.votes += 1
+        if self.port != 9092:
+            p = Pyro5.api.Proxy(uris['peer2'])
+            if not p.get_voted() and p.get_state() == 'follower':
+                p.vote(self.name)
+                self.votes += 1
+        if self.port != 9093:
+            p = Pyro5.api.Proxy(uris['peer3'])
+            if not p.get_voted() and p.get_state() == 'follower':
+                p.vote(self.name)
+                self.votes += 1
+        if self.port != 9094:
+            p = Pyro5.api.Proxy(uris['peer4'])
+            if not p.get_voted() and p.get_state() == 'follower':
+                p.vote(self.name)
+                self.votes += 1
+
+    def vote(self, name):
+        self.voted = True
+        self.election_timer = random.uniform(1.5, 3)
+        print(f'new {self.name} time: {self.election_timer}')
+        return "Vote received by {0} to {1}\n".format(self.name, name)
+
+    def choose_leader(self):
+        max_votes = 0
+        leader = None
+
+        p1 = Pyro5.api.Proxy(uris['peer1'])
+        p2 = Pyro5.api.Proxy(uris['peer2'])
+        p3 = Pyro5.api.Proxy(uris['peer3'])
+        p4 = Pyro5.api.Proxy(uris['peer4'])
+
+        if p1.get_votes() > max_votes:
+            max_votes = p1.get_votes()
+            leader = p1
+        if p2.get_votes() > max_votes:
+            max_votes = p2.get_votes()
+            leader = p2
+        if p3.get_votes() > max_votes:
+            max_votes = p3.get_votes()
+            leader = p3
+        if p4.get_votes() > max_votes:
+            leader = p4
+
+        def reset(peer, state, leader):
+            peer.set_voted(False)
+            peer.set_votes(0)
+            peer.set_state(state)
+            peer.set_leader(leader.get_name())
+
+        if leader:
+            reset(p1, 'follower', leader)
+            reset(p2, 'follower', leader)
+            reset(p3, 'follower', leader)
+            reset(p4, 'follower', leader)
+            reset(leader, 'leader', leader)
 
 
-p = Peer()
-uri = p.daemon.register(Peer)
+def start_server(name, port):
+    p = Peer(str(name), int(port))
+    p.daemon.register(p, name)
+
+    ns = Pyro5.api.locate_ns()
+    ns.register(str(name), uris[name])
+
+    # p1 = Pyro5.api.Proxy(uris['peer1'])
+    # print(p1)
+
+    p.loop_daemon()
+
+# p2 = Peer('peer2', 9092)
+# p3 = Peer('peer3', 9093)
+# p4 = Peer('peer4', 9094)
 
 
 # Fazer isso depois de a eleição estar pronta
-ns = Pyro5.api.locate_ns()  # Localiza o servidor de nomes
-ns.register(str(p.name), uri)  # Registra o nome (chave) e a uri do objeto
+# ns = Pyro5.api.locate_ns()  # Localiza o servidor de nomes
+# ns.register(str(p1.name), uris['peer1'])  # Registra o nome (chave) e a uri do objeto
+# ns.register(str(p2.name), uris['peer2'])  # Registra o nome (chave) e a uri do objeto
 
-print(uri)
 
-# print(p.daemon.uriFor('peer1'))  #PYRO:peer.one@localhost:9090
+thread_a = threading.Thread(target=start_server, args=('peer1', 9091))
+thread_b = threading.Thread(target=start_server, args=('peer2', 9092))
+thread_c = threading.Thread(target=start_server, args=('peer3', 9093))
+thread_d = threading.Thread(target=start_server, args=('peer4', 9094))
 
-p.loop_daemon()
+thread_a.start()
+thread_b.start()
+thread_c.start()
+thread_d.start()
+
+thread_a.join()
+thread_b.join()
+thread_c.join()
+thread_d.join()
 
 
 
@@ -89,3 +208,5 @@ def electionTimeout():      # Retorna a uri do lider
 # essa informação para os seguidores
 # Depois essa informação é comitada e enviada para o cliente de volta
 
+
+# Testar removendo um nó do daemon ?
