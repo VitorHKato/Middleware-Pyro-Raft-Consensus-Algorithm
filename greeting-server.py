@@ -10,7 +10,6 @@ import random
 import threading
 from util import *
 
-
 @Pyro5.api.expose                   # Permite o acesso remoto
 class Peer:
     def __init__(self, name, port):
@@ -22,6 +21,12 @@ class Peer:
         self.votes = 0
         self.voted = False
         self.leader = None
+        self.heartbeated = False
+        self.heartbeat_time = HEARTBEAT_TIME
+
+        self.name_server = Pyro5.api.locate_ns()
+        self.log_value = None
+        self.value = None
 
     def get_name(self):
         return self.name
@@ -38,6 +43,21 @@ class Peer:
     def get_leader(self):
         return self.leader
 
+    def get_heartbeated(self):
+        return self.heartbeated
+
+    def get_election_timer(self):
+        return self.election_timer
+
+    def get_log_value(self):
+        return self.log_value
+
+    def get_value(self):
+        return self.value
+
+    def get_name_server(self):
+        return self.name_server
+
     def set_votes(self, votes):
         self.votes = votes
 
@@ -49,6 +69,18 @@ class Peer:
 
     def set_leader(self, leader):
         self.leader = leader
+
+    def set_heartbeated(self, heartbeated):
+        self.heartbeated = heartbeated
+
+    def set_election_timer(self, election_timer):
+        self.election_timer = election_timer
+
+    def set_value(self, value):
+        self.value = value
+
+    def set_log_value(self, log_value):
+        self.log_value = log_value
 
     def loop_daemon(self):
         print(f"{self.name} is running.")
@@ -63,44 +95,91 @@ class Peer:
 
         print(f"New leader: {self.leader}")
 
-        if countdown_timer(self.election_timer) and not self.leader:
+        # Reinicia o heartbeat
+        self.heartbeated = False
+        self.heartbeat_time = HEARTBEAT_TIME
+
+        if countdown_timer(self.heartbeat_time) and self.leader == self.name:
+            self.append_entries()
+
+        # Corrigir esse if, está chamando pra todos na primeira eleição
+        if countdown_timer(self.election_timer) and not self.heartbeated and self.leader != self.name:
             print(f"Time's up {self.name}!")
             self.state = states['candidate']
-            self.comunication()
-
-            print(f'{self.name} after communcation: {self.state}, {self.votes}, {self.voted}')
+            self.request_vote()
 
             self.choose_leader()
 
         self.election()
 
-    def comunication(self):
+    def request_vote(self):
+        # Vota a si mesmo
+        self.vote(self.name)
+        self.votes += 1
+
+        print(f'{self.name} requested vote.')
+
+        def vote(p):
+            p.vote(self.name)
+            self.votes += 1
+
         if self.port != 9091:
             p = Pyro5.api.Proxy(uris['peer1'])
             if not p.get_voted() and p.get_state() == 'follower':
-                p.vote(self.name)
-                self.votes += 1
+                vote(p)
         if self.port != 9092:
             p = Pyro5.api.Proxy(uris['peer2'])
             if not p.get_voted() and p.get_state() == 'follower':
-                p.vote(self.name)
-                self.votes += 1
+                vote(p)
         if self.port != 9093:
             p = Pyro5.api.Proxy(uris['peer3'])
             if not p.get_voted() and p.get_state() == 'follower':
-                p.vote(self.name)
-                self.votes += 1
+                vote(p)
         if self.port != 9094:
             p = Pyro5.api.Proxy(uris['peer4'])
             if not p.get_voted() and p.get_state() == 'follower':
-                p.vote(self.name)
-                self.votes += 1
+                vote(p)
 
     def vote(self, name):
         self.voted = True
         self.election_timer = random.uniform(1.5, 3)
         print(f'new {self.name} time: {self.election_timer}')
         return "Vote received by {0} to {1}\n".format(self.name, name)
+
+    def append_entries(self):
+        def set_values(p):
+            p.set_heartbeated(True)
+            p.set_election_timer(random.uniform(1.5, 3))
+            print(f'New {p.get_name()} time after heartbeat: {p.get_election_timer()}')
+            if self.log_value:
+                p.set_log_value(self.log_value)
+                print(f'{p.get_name()} log value: {p.get_log_value()}')
+                self.set_value(self.log_value)
+                self.log_value = None
+            if self.value:
+                p.set_value(self.value)
+                print(f'{p.get_name()} value: {p.get_value()}')
+                p.set_log_value(None)
+
+        if self.port != 9091:
+            p = Pyro5.api.Proxy(uris['peer1'])
+            if p.get_state() == 'follower':
+                set_values(p)
+        if self.port != 9092:
+            p = Pyro5.api.Proxy(uris['peer2'])
+            if p.get_state() == 'follower':
+                set_values(p)
+        if self.port != 9093:
+            p = Pyro5.api.Proxy(uris['peer3'])
+            if p.get_state() == 'follower':
+                set_values(p)
+        if self.port != 9094:
+            p = Pyro5.api.Proxy(uris['peer4'])
+            if p.get_state() == 'follower':
+                set_values(p)
+
+        print(f'{self.get_name()} log value: {self.get_log_value()}')
+        print(f'{self.get_name()} value: {self.get_value()}')
 
     def choose_leader(self):
         max_votes = 0
@@ -130,35 +209,29 @@ class Peer:
             peer.set_leader(leader.get_name())
 
         if leader:
+            # Remove o líder antigo do servidor de nomes
+            if str(leader.get_name()) != str(leader.get_leader()) and leader.get_leader() is not None:
+                leader.get_name_server().remove(leader.get_leader())
+
             reset(p1, 'follower', leader)
             reset(p2, 'follower', leader)
             reset(p3, 'follower', leader)
             reset(p4, 'follower', leader)
             reset(leader, 'leader', leader)
 
+            leader.get_name_server().register(leader.get_name(), uris[leader.get_name()])
+
+            print(f'New leader after vote: {leader.get_name()}')
+
+        for name, uri in leader.get_name_server().list().items():
+            print(f"Registered uri's in name server: {str(name)}: {str(uri)}")
+
 
 def start_server(name, port):
     p = Peer(str(name), int(port))
     p.daemon.register(p, name)
 
-    ns = Pyro5.api.locate_ns()
-    ns.register(str(name), uris[name])
-
-    # p1 = Pyro5.api.Proxy(uris['peer1'])
-    # print(p1)
-
     p.loop_daemon()
-
-# p2 = Peer('peer2', 9092)
-# p3 = Peer('peer3', 9093)
-# p4 = Peer('peer4', 9094)
-
-
-# Fazer isso depois de a eleição estar pronta
-# ns = Pyro5.api.locate_ns()  # Localiza o servidor de nomes
-# ns.register(str(p1.name), uris['peer1'])  # Registra o nome (chave) e a uri do objeto
-# ns.register(str(p2.name), uris['peer2'])  # Registra o nome (chave) e a uri do objeto
-
 
 thread_a = threading.Thread(target=start_server, args=('peer1', 9091))
 thread_b = threading.Thread(target=start_server, args=('peer2', 9092))
@@ -174,12 +247,6 @@ thread_a.join()
 thread_b.join()
 thread_c.join()
 thread_d.join()
-
-
-
-
-def electionTimeout():      # Retorna a uri do lider
-    pass
 
 # Eleição
 # Criar 4 nós que iniciam como seguidores
@@ -210,3 +277,4 @@ def electionTimeout():      # Retorna a uri do lider
 
 
 # Testar removendo um nó do daemon ?
+# Ver a questão de poder ocorrer novas eleições após selecionado um líder
