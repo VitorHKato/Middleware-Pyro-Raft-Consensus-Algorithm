@@ -13,7 +13,7 @@ uris = {
     'peer4': 'PYRO:peer4@localhost:9094',
 }
 
-HEARTBEAT_TIME = 0.5
+HEARTBEAT_TIME = 2.25
 
 def countdown_timer(seconds):
     while seconds > 0:

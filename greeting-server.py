@@ -78,9 +78,11 @@ class Peer:
 
     def set_value(self, value):
         self.value = value
+        print(f'Set {self.get_name()} value: {value}')
 
     def set_log_value(self, log_value):
         self.log_value = log_value
+        print(f'Set {self.get_name()} log value: {log_value}')
 
     def loop_daemon(self):
         print(f"{self.name} is running.")
@@ -95,20 +97,24 @@ class Peer:
 
         print(f"New leader: {self.leader}")
 
-        # Reinicia o heartbeat
-        self.heartbeated = False
-        self.heartbeat_time = HEARTBEAT_TIME
+        self.voted = False
 
         if countdown_timer(self.heartbeat_time) and self.leader == self.name:
             self.append_entries()
 
-        # Corrigir esse if, está chamando pra todos na primeira eleição
-        if countdown_timer(self.election_timer) and not self.heartbeated and self.leader != self.name:
-            print(f"Time's up {self.name}!")
-            self.state = states['candidate']
-            self.request_vote()
+        if countdown_timer(self.election_timer) and self.heartbeated is False and self.leader != self.name:
 
-            self.choose_leader()
+            if self.voted is False:
+                print(f"Time's up {self.name}!")
+                self.state = states['candidate']
+                self.request_vote()
+
+                self.choose_leader()
+
+        # Reinicia o heartbeat
+        self.heartbeated = False
+        self.heartbeat_time = HEARTBEAT_TIME
+        # self.leader = None
 
         self.election()
 
@@ -153,12 +159,10 @@ class Peer:
             print(f'New {p.get_name()} time after heartbeat: {p.get_election_timer()}')
             if self.log_value:
                 p.set_log_value(self.log_value)
-                print(f'{p.get_name()} log value: {p.get_log_value()}')
-                self.set_value(self.log_value)
+                self.set_value(p.get_log_value())
                 self.log_value = None
             if self.value:
                 p.set_value(self.value)
-                print(f'{p.get_name()} value: {p.get_value()}')
                 p.set_log_value(None)
 
         if self.port != 9091:
@@ -203,7 +207,7 @@ class Peer:
             leader = p4
 
         def reset(peer, state, leader):
-            peer.set_voted(False)
+            # peer.set_voted(False)
             peer.set_votes(0)
             peer.set_state(state)
             peer.set_leader(leader.get_name())
